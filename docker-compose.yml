@@ -1,0 +1,117 @@
+version: '3.9'
+
+services:
+
+  # ── Databases ──────────────────────────────────────────────────────────────
+  postgres:
+    image: postgres:16-alpine
+    container_name: fintrack-postgres
+    environment:
+      POSTGRES_USER: fintrack
+      POSTGRES_PASSWORD: fintrack123
+      POSTGRES_DB: fintrack
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./infra/postgres/init.sql:/docker-entrypoint-initdb.d/init.sql
+    networks:
+      - fintrack-net
+
+  # ── Messaging ──────────────────────────────────────────────────────────────
+  rabbitmq:
+    image: rabbitmq:3.13-management-alpine
+    container_name: fintrack-rabbitmq
+    environment:
+      RABBITMQ_DEFAULT_USER: fintrack
+      RABBITMQ_DEFAULT_PASS: fintrack123
+    ports:
+      - "5672:5672"
+      - "15672:15672"
+    networks:
+      - fintrack-net
+
+  # ── Observability: Logs ────────────────────────────────────────────────────
+  seq:
+    image: datalust/seq:latest
+    container_name: fintrack-seq
+    environment:
+      ACCEPT_EULA: Y
+    ports:
+      - "5341:5341"
+      - "8080:80"
+    volumes:
+      - seq_data:/data
+    networks:
+      - fintrack-net
+
+  # ── Observability: Metrics ─────────────────────────────────────────────────
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: fintrack-prometheus
+    volumes:
+      - ./infra/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml
+    ports:
+      - "9090:9090"
+    networks:
+      - fintrack-net
+
+  grafana:
+    image: grafana/grafana:latest
+    container_name: fintrack-grafana
+    environment:
+      GF_SECURITY_ADMIN_PASSWORD: fintrack123
+    ports:
+      - "3000:3000"
+    volumes:
+      - grafana_data:/var/lib/grafana
+      - ./infra/grafana/provisioning:/etc/grafana/provisioning
+    depends_on:
+      - prometheus
+    networks:
+      - fintrack-net
+
+  # ── Observability: Traces ──────────────────────────────────────────────────
+  jaeger:
+    image: jaegertracing/all-in-one:latest
+    container_name: fintrack-jaeger
+    environment:
+      COLLECTOR_OTLP_ENABLED: "true"
+    ports:
+      - "16686:16686"
+      - "4317:4317"
+      - "4318:4318"
+    networks:
+      - fintrack-net
+
+  # ── Services ───────────────────────────────────────────────────────────────
+  auth-service:
+    build:
+      context: ./src
+      dockerfile: FinTrack.Auth/API/Dockerfile
+    container_name: fintrack-auth
+    environment:
+      ASPNETCORE_ENVIRONMENT: Development
+      ConnectionStrings__Default: "Host=postgres;Port=5432;Database=fintrack_auth;Username=fintrack;Password=fintrack123"
+      Jwt__Secret: "super-secret-key-change-in-production-32chars"
+      Jwt__Issuer: "fintrack-auth"
+      Jwt__Audience: "fintrack"
+      Seq__ServerUrl: "http://seq:5341"
+      Otlp__Endpoint: "http://jaeger:4317"
+    ports:
+      - "5001:8080"
+    depends_on:
+      - postgres
+      - seq
+      - jaeger
+    networks:
+      - fintrack-net
+
+volumes:
+  postgres_data:
+  seq_data:
+  grafana_data:
+
+networks:
+  fintrack-net:
+    driver: bridge
